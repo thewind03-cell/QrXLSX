@@ -81,9 +81,10 @@ object TabLoader {
         val uri = Uri.parse(tab.uri)
         return try {
             val meta = FileMetaReader.read(context, uri)
-            val wb = XlsxReader.read(context, uri, onlySheet = tab.sheetIndex)
+            val cols = setOf(tab.qrCol, tab.nameCol, tab.qtyCol, tab.imeiCol).filter { it >= 0 }.toSet()
+            val sheet = XlsxReader.readSheet(context, uri, sheetIndex = tab.sheetIndex, onlyColumns = cols)
             val items = buildItems(
-                wb.sheets.first(), tab.hasHeader, tab.qrCol, tab.nameCol, tab.qtyCol, tab.imeiCol
+                sheet, tab.hasHeader, tab.qrCol, tab.nameCol, tab.qtyCol, tab.imeiCol
             )
             if (items.isEmpty()) {
                 Result.Fail("Không có mã hợp lệ ở cột đã chọn (file có thể đã thay đổi)")

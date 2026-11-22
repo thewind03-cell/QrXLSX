@@ -25,6 +25,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import java.text.SimpleDateFormat
@@ -77,11 +81,15 @@ class MainActivity : ComponentActivity() {
 fun App(vm: AppViewModel) {
     val context = LocalContext.current
 
+    var repickTabId by rememberSaveable { mutableLongStateOf(-1L) }
+
     val picker = rememberLauncherForActivityResult(PersistableOpenDocument()) { uri: Uri? ->
         if (uri != null) vm.onFilePicked(uri)
     }
     val repicker = rememberLauncherForActivityResult(PersistableOpenDocument()) { uri: Uri? ->
-        if (uri != null && vm.repickTabId >= 0) vm.repickTab(vm.repickTabId, uri)
+        val id = repickTabId
+        repickTabId = -1L
+        if (uri != null && id >= 0) vm.repickTab(id, uri)
     }
 
     Surface(Modifier.fillMaxSize()) {
@@ -94,6 +102,9 @@ fun App(vm: AppViewModel) {
                     canGoBack = vm.tabs.isNotEmpty(),
                     onBack = { vm.closeSetup() },
                     onPick = { picker.launch(arrayOf("*/*")) },
+                    onSelectSheet = { vm.selectSetupSheet(it) },
+                    onCountQr = { sheetIdx, qrCol -> vm.countSetupQr(sheetIdx, qrCol) },
+                    onClearCount = { vm.clearSetupCount() },
                     onStart = { vm.startTab(it) },
                     onClearData = {
                         vm.clearSavedData {
@@ -103,7 +114,7 @@ fun App(vm: AppViewModel) {
                 )
             } else {
                 DisplayScreen(vm) { tabId ->
-                    vm.repickTabId = tabId
+                    repickTabId = tabId
                     repicker.launch(arrayOf("*/*"))
                 }
             }

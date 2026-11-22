@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +27,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +48,9 @@ fun SetupScreen(
     canGoBack: Boolean,
     onBack: () -> Unit,
     onPick: () -> Unit,
+    onSelectSheet: (Int) -> Unit,
+    onCountQr: (sheetIndex: Int, qrCol: Int) -> Unit,
+    onClearCount: () -> Unit,
     onStart: (SetupChoice) -> Unit,
     onClearData: () -> Unit
 ) {
@@ -64,22 +67,30 @@ fun SetupScreen(
             TextButton(onClick = onBack) { Text("← Quay lại") }
         }
         Text(
-            if (canGoBack) "Thêm tab mới" else "QRcode Kiểm Kê",
+            if (canGoBack) "Thêm tab mới" else "QR Kiểm Kê",
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold
         )
         Button(onClick = onPick, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
             Text(if (draft == null) "Chọn file Excel (.xlsx)" else "Đổi file")
         }
-        if (busy) CircularProgressIndicator()
+        if (busy || draft?.sheetLoading == true) CircularProgressIndicator()
         if (error != null) Text(error, color = MaterialTheme.colorScheme.error)
-        if (draft != null) SetupOptions(draft, busy, onStart)
+        if (draft != null) {
+            SetupOptions(
+                draft = draft,
+                busy = busy,
+                onSelectSheet = onSelectSheet,
+                onCountQr = onCountQr,
+                onClearCount = onClearCount,
+                onStart = onStart
+            )
+        }
 
         OutlinedButton(onClick = { confirmClear = true }, modifier = Modifier.fillMaxWidth()) {
             Text("Xoá dữ liệu đã lưu")
         }
 
-        Spacer(Modifier.weight(1f))
         Text(
             "© 2026 Thanh Phong Do · thewind03@gmail.com",
             fontSize = 12.sp,
@@ -110,41 +121,52 @@ fun SetupScreen(
     }
 }
 
-private fun guess(sheet: SheetData, hasHeader: Boolean, test: (String) -> Boolean): Int {
-    if (!hasHeader) return -1
-    val header = sheet.rows.firstOrNull() ?: return -1
-    return header.indexOfFirst { test(it.trim().lowercase()) }
+private fun guess(headerRow: SheetRow?, colCount: Int, hasHeader: Boolean, test: (String) -> Boolean): Int {
+    if (!hasHeader || headerRow == null) return -1
+    for (i in 0 until colCount) {
+        if (test(headerRow.cell(i).trim().lowercase())) return i
+    }
+    return -1
 }
 
-private fun columnLabel(sheet: SheetData, i: Int, hasHeader: Boolean): String {
-    val h = if (hasHeader) sheet.rows.firstOrNull()?.getOrNull(i)?.trim().orEmpty() else ""
+private fun columnLabel(headerRow: SheetRow?, i: Int, hasHeader: Boolean): String {
+    val h = if (hasHeader) headerRow?.cell(i)?.trim().orEmpty() else ""
     val letter = columnName(i)
     return if (h.isEmpty()) "Cột $letter" else "$letter – $h"
 }
 
 @Composable
-fun SetupOptions(draft: SetupDraft, busy: Boolean, onStart: (SetupChoice) -> Unit) {
-    val workbook = draft.workbook
-    var sheetIdx by remember(workbook) { mutableIntStateOf(0) }
-    val sheet = workbook.sheets[sheetIdx]
-    var hasHeader by remember(workbook) { mutableStateOf(true) }
+fun SetupOptions(
+    draft: SetupDraft,
+    busy: Boolean,
+    onSelectSheet: (Int) -> Unit,
+    onCountQr: (sheetIndex: Int, qrCol: Int) -> Unit,
+    onClearCount: () -> Unit,
+    onStart: (SetupChoice) -> Unit
+) {
+    val sheet = draft.preview
+    val sheetIdx = draft.sheetIndex
+    var hasHeader by remember(draft) { mutableStateOf(true) }
 
-    val colCount = remember(sheet) { sheet.rows.take(50).maxOfOrNull { it.size } ?: 0 }
-    val labels = remember(sheet, hasHeader) { (0 until colCount).map { columnLabel(sheet, it, hasHeader) } }
+    val headerRow = remember(sheet) { sheet.rows.firstOrNull { it.rowNumber == 1 } }
+    val colCount = remember(sheet) { sheet.rows.maxOfOrNull { it.maxCol + 1 } ?: 0 }
+    val labels = remember(headerRow, colCount, hasHeader) {
+        (0 until colCount).map { columnLabel(headerRow, it, hasHeader) }
+    }
 
     var qrCol by remember(sheet, hasHeader) {
-        val byImei = guess(sheet, hasHeader) { it.contains("imei") }
+        val byImei = guess(headerRow, colCount, hasHeader) { it.contains("imei") }
         mutableIntStateOf(
             if (byImei >= 0) byImei
-            else guess(sheet, hasHeader) { it.contains("mã") || it.contains("sku") || it.contains("code") }
+            else guess(headerRow, colCount, hasHeader) { it.contains("mã") || it.contains("sku") || it.contains("code") }
         )
     }
     var nameCol by remember(sheet, hasHeader) {
-        mutableIntStateOf(guess(sheet, hasHeader) { it.contains("tên") || it.contains("name") })
+        mutableIntStateOf(guess(headerRow, colCount, hasHeader) { it.contains("tên") || it.contains("name") })
     }
     var qtyCol by remember(sheet, hasHeader) {
         mutableIntStateOf(
-            guess(sheet, hasHeader) {
+            guess(headerRow, colCount, hasHeader) {
                 it.contains("số lượng") || it.contains("so luong") || it.contains("qty") ||
                     it.contains("quantity") || it == "sl"
             }
@@ -152,42 +174,59 @@ fun SetupOptions(draft: SetupDraft, busy: Boolean, onStart: (SetupChoice) -> Uni
     }
     var imeiCol by remember(sheet, hasHeader) { mutableIntStateOf(-1) }
 
-    val items = remember(sheet, hasHeader, qrCol) {
-        if (qrCol < 0) emptyList() else buildItems(sheet, hasHeader, qrCol, -1, -1, -1)
+    LaunchedEffect(draft, sheet, qrCol, draft.sheetLoading) {
+        if (!draft.sheetLoading && qrCol >= 0) {
+            onCountQr(sheetIdx, qrCol)
+        } else {
+            onClearCount()
+        }
     }
+
+    val validCount = draft.countResult?.count(hasHeader) ?: 0
+    val firstCode = draft.countResult?.firstCode(hasHeader)
+    val controlsEnabled = !busy && !draft.sheetLoading
 
     Text("File: ${draft.meta.name}", fontSize = 14.sp)
 
-    if (workbook.sheets.size > 1) {
-        Picker("Sheet", workbook.sheets.map { it.name }, sheetIdx, false) { sheetIdx = it }
+    if (draft.sheetNames.size > 1) {
+        Picker("Sheet", draft.sheetNames, sheetIdx, false, enabled = !busy, onSelect = onSelectSheet)
     }
 
     Row(
-        Modifier.fillMaxWidth().clickable { hasHeader = !hasHeader },
+        Modifier.fillMaxWidth().clickable(enabled = controlsEnabled) { hasHeader = !hasHeader },
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Checkbox(checked = hasHeader, onCheckedChange = { hasHeader = it })
+        Checkbox(checked = hasHeader, enabled = controlsEnabled, onCheckedChange = { hasHeader = it })
         Text("Dòng đầu là tiêu đề")
     }
 
-    Picker("Cột tạo QR (bắt buộc)", labels, qrCol, false) { qrCol = it }
-    Picker("Hiển thị thêm: Tên sản phẩm", labels, nameCol, true) { nameCol = it }
-    Picker("Hiển thị thêm: Số lượng", labels, qtyCol, true) { qtyCol = it }
-    Picker("Hiển thị thêm: IMEI", labels, imeiCol, true) { imeiCol = it }
+    Picker("Cột tạo QR (bắt buộc)", labels, qrCol, false, enabled = controlsEnabled) { qrCol = it }
+    Picker("Hiển thị thêm: Tên sản phẩm", labels, nameCol, true, enabled = controlsEnabled) { nameCol = it }
+    Picker("Hiển thị thêm: Số lượng", labels, qtyCol, true, enabled = controlsEnabled) { qtyCol = it }
+    Picker("Hiển thị thêm: IMEI", labels, imeiCol, true, enabled = controlsEnabled) { imeiCol = it }
 
-    if (qrCol >= 0) {
-        Text(
-            "Có ${items.size} mã hợp lệ" +
-                (items.firstOrNull()?.let { " · mã đầu tiên: ${it.code}" } ?: ""),
-            fontSize = 14.sp
-        )
+    draft.countError?.let {
+        Text(it, color = MaterialTheme.colorScheme.error, fontSize = 14.sp)
+    }
+
+    if (qrCol >= 0 && !draft.sheetLoading && draft.countError == null) {
+        if (draft.counting) {
+            Text("Đang đếm…", fontSize = 14.sp)
+        } else if (draft.countResult != null) {
+            Text(
+                "Có $validCount mã hợp lệ" +
+                    (firstCode?.let { " · mã đầu tiên: $it" } ?: ""),
+                fontSize = 14.sp
+            )
+        }
     }
 
     Button(
         onClick = {
-            onStart(SetupChoice(sheetIdx, sheet.name, hasHeader, qrCol, nameCol, qtyCol, imeiCol))
+            val sheetName = draft.sheetNames.getOrElse(sheetIdx) { sheet.name }
+            onStart(SetupChoice(sheetIdx, sheetName, hasHeader, qrCol, nameCol, qtyCol, imeiCol))
         },
-        enabled = qrCol >= 0 && items.isNotEmpty() && !busy,
+        enabled = qrCol >= 0 && !draft.sheetLoading && !draft.counting && validCount > 0 && !busy && draft.countError == null,
         modifier = Modifier.fillMaxWidth().height(56.dp)
     ) {
         Text("Bắt đầu", fontSize = 18.sp)
@@ -200,6 +239,7 @@ fun Picker(
     options: List<String>,
     selected: Int,
     allowNone: Boolean,
+    enabled: Boolean = true,
     onSelect: (Int) -> Unit
 ) {
     var open by remember { mutableStateOf(false) }
@@ -207,7 +247,11 @@ fun Picker(
     Column {
         Text(label, fontSize = 13.sp)
         Box {
-            OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { open = true },
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Text(text, modifier = Modifier.weight(1f), maxLines = 1)
                 Text("▾")
             }

@@ -1,4 +1,4 @@
-# QRcode Kiểm Kê
+# QR Kiểm Kê
 
 Ứng dụng Android nhẹ: đọc file `.xlsx`, tạo QR từ cột bạn chọn, bấm nút để sang mã tiếp theo.
 Hoạt động hoàn toàn offline: không có quyền Internet, không dùng thư viện QR ngoài.

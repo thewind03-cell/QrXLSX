@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -26,8 +27,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Kết quả chọn file ở màn Setup (workbook chỉ nằm trong RAM tới khi bấm Bắt đầu / Quay lại). */
-class SetupDraft(val uri: Uri, val meta: FileMeta, val workbook: XlsxWorkbook)
+/** Kết quả chọn file ở màn Setup (chỉ giữ danh sách sheet và tối đa 50 dòng đầu của sheet đang chọn). */
+class SetupDraft(
+    val uri: Uri,
+    val meta: FileMeta,
+    val sheetNames: List<String>,
+    initialSheetIndex: Int,
+    initialPreview: SheetData
+) {
+    var sheetIndex by mutableIntStateOf(initialSheetIndex)
+    var preview by mutableStateOf(initialPreview)
+    var sheetLoading by mutableStateOf(false)
+    var counting by mutableStateOf(false)
+    var countResult by mutableStateOf<QrColumnCount?>(null)
+    var countError by mutableStateOf<String?>(null)
+}
 
 /** Lựa chọn của người dùng ở màn Setup. */
 class SetupChoice(
@@ -79,25 +93,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var restoreDone by mutableIntStateOf(0)
         private set
 
-    /** Tab đang chờ người dùng chọn lại file. */
-    var repickTabId: Long = -1L
-
     private var previousId = -1L
     private var nextId = 1L
     private var persistEnabled = false
     private var saveJob: Job? = null
+    private var sheetLoadJob: Job? = null
+    private var countJob: Job? = null
 
     val currentTab: TabState? get() = tabs.firstOrNull { it.id == selectedId }
     val setupVisible: Boolean get() = tabs.isEmpty() || showSetup
 
     init {
         scope.launch {
-            val saved = withContext(storeDispatcher) { store.read() }
+            val saved = withContext(storeDispatcher) {
+                cleanupImportCache(appContext.cacheDir)
+                store.read()
+            }
             if (saved != null && saved.tabs.isNotEmpty() && tabs.isEmpty()) {
                 pendingRestore = saved
             } else {
                 persistEnabled = true
             }
+        }
+    }
+
+    private fun cleanupImportCache(cacheDir: File) {
+        try {
+            cacheDir.listFiles { file ->
+                file.isFile && file.name.startsWith("import") && file.name.endsWith(".xlsx")
+            }?.forEach { it.delete() }
+        } catch (_: Exception) {
         }
     }
 
@@ -217,12 +242,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeSetup() {
+        sheetLoadJob?.cancel()
+        countJob?.cancel()
         showSetup = false
         draft = null
         setupError = null
     }
 
     fun onFilePicked(uri: Uri) {
+        sheetLoadJob?.cancel()
+        countJob?.cancel()
         setupBusy = true
         setupError = null
         scope.launch {
@@ -230,9 +259,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val result = withContext(Dispatchers.IO) {
                     takePermission(uri)
                     val meta = FileMetaReader.read(appContext, uri) ?: FileMeta("file.xlsx", -1L, 0L)
-                    SetupDraft(uri, meta, XlsxReader.read(appContext, uri))
+                    val preview = XlsxReader.readWorkbookPreview(appContext, uri, sheetIndex = 0)
+                    SetupDraft(uri, meta, preview.sheetNames, preview.sheetIndex, preview.sheet)
                 }
                 draft = result
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: OutOfMemoryError) {
                 setupError = "Không đủ bộ nhớ để đọc file"
             } catch (e: Exception) {
@@ -242,45 +274,153 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun selectSetupSheet(sheetIndex: Int) {
+        val d = draft ?: return
+        if (sheetIndex !in d.sheetNames.indices) return
+        if (sheetIndex == d.sheetIndex && !d.sheetLoading) return
+        sheetLoadJob?.cancel()
+        countJob?.cancel()
+        d.sheetIndex = sheetIndex
+        d.preview = SheetData(d.sheetNames[sheetIndex], emptyList())
+        d.sheetLoading = true
+        d.counting = false
+        d.countResult = null
+        d.countError = null
+        sheetLoadJob = scope.launch {
+            try {
+                val preview = withContext(Dispatchers.IO) {
+                    XlsxReader.readWorkbookPreview(appContext, d.uri, sheetIndex = sheetIndex)
+                }
+                if (draft === d && d.sheetIndex == sheetIndex) {
+                    d.preview = preview.sheet
+                    d.sheetLoading = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                if (draft === d && d.sheetIndex == sheetIndex) {
+                    d.countError = "Không đủ bộ nhớ để đọc file"
+                    d.sheetLoading = false
+                }
+            } catch (e: Exception) {
+                if (draft === d && d.sheetIndex == sheetIndex) {
+                    d.countError = "Không đọc được sheet: ${e.message ?: e.javaClass.simpleName}"
+                    d.sheetLoading = false
+                }
+            }
+        }
+    }
+
+    fun countSetupQr(sheetIndex: Int, qrCol: Int) {
+        val d = draft ?: return
+        countJob?.cancel()
+        if (qrCol < 0 || d.sheetLoading || d.sheetIndex != sheetIndex) {
+            d.counting = false
+            d.countResult = null
+            return
+        }
+        d.counting = true
+        d.countResult = null
+        d.countError = null
+        countJob = scope.launch {
+            try {
+                val res = withContext(Dispatchers.IO) {
+                    XlsxReader.countValidQrCodes(appContext, d.uri, sheetIndex, qrCol)
+                }
+                if (draft === d && d.sheetIndex == sheetIndex) {
+                    d.countResult = res
+                    d.counting = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                if (draft === d && d.sheetIndex == sheetIndex) {
+                    d.countError = "Không đủ bộ nhớ để đọc file"
+                    d.counting = false
+                }
+            } catch (e: Exception) {
+                if (draft === d && d.sheetIndex == sheetIndex) {
+                    d.countError = "Không đọc được dữ liệu: ${e.message ?: e.javaClass.simpleName}"
+                    d.counting = false
+                }
+            }
+        }
+    }
+
+    fun clearSetupCount() {
+        countJob?.cancel()
+        draft?.let {
+            it.counting = false
+            it.countResult = null
+        }
+    }
+
     fun startTab(choice: SetupChoice) {
         val d = draft ?: return
         if (tabs.size >= MAX_TABS) return
+        sheetLoadJob?.cancel()
+        countJob?.cancel()
         setupBusy = true
+        setupError = null
         scope.launch {
-            val items = withContext(Dispatchers.Default) {
-                buildItems(
-                    d.workbook.sheets[choice.sheetIndex], choice.hasHeader,
-                    choice.qrCol, choice.nameCol, choice.qtyCol, choice.imeiCol
+            try {
+                val items = withContext(Dispatchers.IO) {
+                    val cols = setOf(choice.qrCol, choice.nameCol, choice.qtyCol, choice.imeiCol)
+                        .filter { it >= 0 }
+                        .toSet()
+                    val sheet = XlsxReader.readSheet(
+                        appContext,
+                        d.uri,
+                        sheetIndex = choice.sheetIndex,
+                        onlyColumns = cols
+                    )
+                    buildItems(
+                        sheet, choice.hasHeader,
+                        choice.qrCol, choice.nameCol, choice.qtyCol, choice.imeiCol
+                    )
+                }
+                if (items.isEmpty()) {
+                    setupError = "Không có mã hợp lệ ở cột đã chọn"
+                    setupBusy = false
+                    return@launch
+                }
+                val tab = TabState(
+                    nextId++,
+                    SavedTab(
+                        uri = d.uri.toString(),
+                        name = d.meta.name,
+                        size = d.meta.size,
+                        lastModified = d.meta.lastModified,
+                        sheetIndex = choice.sheetIndex,
+                        sheetName = choice.sheetName,
+                        hasHeader = choice.hasHeader,
+                        qrCol = choice.qrCol,
+                        nameCol = choice.nameCol,
+                        qtyCol = choice.qtyCol,
+                        imeiCol = choice.imeiCol,
+                        position = 0
+                    )
                 )
+                tab.items = items
+                tab.status = TabStatus.Ready
+                currentTab?.let { addMark(it) }
+                previousId = selectedId
+                tabs.add(tab)
+                selectedId = tab.id
+                draft = null
+                showSetup = false
+                setupBusy = false
+                persistEnabled = true
+                saveNow()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                setupError = "Không đủ bộ nhớ để đọc file"
+                setupBusy = false
+            } catch (e: Exception) {
+                setupError = "Không đọc được file: ${e.message ?: e.javaClass.simpleName}"
+                setupBusy = false
             }
-            val tab = TabState(
-                nextId++,
-                SavedTab(
-                    uri = d.uri.toString(),
-                    name = d.meta.name,
-                    size = d.meta.size,
-                    lastModified = d.meta.lastModified,
-                    sheetIndex = choice.sheetIndex,
-                    sheetName = choice.sheetName,
-                    hasHeader = choice.hasHeader,
-                    qrCol = choice.qrCol,
-                    nameCol = choice.nameCol,
-                    qtyCol = choice.qtyCol,
-                    imeiCol = choice.imeiCol,
-                    position = 0
-                )
-            )
-            tab.items = items
-            tab.status = TabStatus.Ready
-            currentTab?.let { addMark(it) }
-            previousId = selectedId
-            tabs.add(tab)
-            selectedId = tab.id
-            draft = null
-            showSetup = false
-            setupBusy = false
-            persistEnabled = true
-            saveNow()
         }
     }
 

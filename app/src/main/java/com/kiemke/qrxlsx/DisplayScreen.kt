@@ -5,6 +5,8 @@
 package com.kiemke.qrxlsx
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.res.Configuration
 import android.widget.Toast
 import android.view.WindowManager
@@ -69,10 +71,22 @@ import java.util.Locale
 private val WarningYellow = Color(0xFFFFF3CD)
 private val WarningText = Color(0xFF664D03)
 
+private fun Context.findActivity(): Activity? {
+    var ctx: Context? = this
+    while (ctx != null) {
+        if (ctx is Activity) return ctx
+        if (ctx !is ContextWrapper) return null
+        val next = ctx.baseContext
+        if (next === ctx) return null
+        ctx = next
+    }
+    return null
+}
+
 @Composable
 fun DisplayScreen(vm: AppViewModel, onRepick: (Long) -> Unit) {
     val context = LocalContext.current
-    val activity = context as Activity
+    val activity = remember(context) { context.findActivity() }
     val tab = vm.currentTab ?: return
 
     var showExit by remember { mutableStateOf(false) }
@@ -83,21 +97,24 @@ fun DisplayScreen(vm: AppViewModel, onRepick: (Long) -> Unit) {
     BackHandler { showExit = true }
 
     // Giữ màn hình sáng và dùng phím âm lượng để chuyển mã; khi rời màn thì trả độ sáng hệ thống.
-    DisposableEffect(Unit) {
-        val window = activity.window
-        val oldBrightness = window.attributes.screenBrightness
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    DisposableEffect(activity) {
+        val window = activity?.window
+        val oldBrightness = window?.attributes?.screenBrightness ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         KeyBus.handler = { code -> vm.onVolumeKey(code) }
         onDispose {
             KeyBus.handler = null
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            window.attributes = window.attributes.also { it.screenBrightness = oldBrightness }
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (window != null) {
+                window.attributes = window.attributes.also { it.screenBrightness = oldBrightness }
+            }
         }
     }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val level = vm.brightness
-    LaunchedEffect(level) {
-        activity.window.attributes = activity.window.attributes.also { it.screenBrightness = level / 100f }
+    LaunchedEffect(activity, level) {
+        val window = activity?.window ?: return@LaunchedEffect
+        window.attributes = window.attributes.also { it.screenBrightness = level / 100f }
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
@@ -204,7 +221,7 @@ fun DisplayScreen(vm: AppViewModel, onRepick: (Long) -> Unit) {
                 TextButton(onClick = {
                     showExit = false
                     vm.saveNow()
-                    activity.finish()
+                    activity?.finish()
                 }) { Text("Thoát") }
             },
             dismissButton = { TextButton(onClick = { showExit = false }) { Text("Ở lại") } }

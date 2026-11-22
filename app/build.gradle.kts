@@ -18,7 +18,7 @@ android {
 
     defaultConfig {
         // Đổi applicationId thành tên riêng của bạn TRƯỚC KHI đưa lên Play, vì không đổi được sau này.
-        applicationId = "com.kiemke.qrxlsx"
+        applicationId = "io.github.thewind03_cell.qrkiemke"
         minSdk = 24
         targetSdk = 36
         versionCode = 1          // Tăng lên 1 sau mỗi lần upload bản mới
@@ -70,4 +70,5 @@ dependencies {
     // Chỉ dùng cho unit test JVM (không vào APK): org.json bản thật vì android.jar chỉ có stub.
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("net.sf.kxml:kxml2:2.3.0")
 }

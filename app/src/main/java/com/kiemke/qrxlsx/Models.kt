@@ -9,6 +9,14 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 
+/** Một dòng dữ liệu thô đọc từ sheet (giữ số dòng Excel 1-based thật, không đệm dòng trống). */
+data class SheetRow(val rowNumber: Int, val cells: Map<Int, String>) {
+    val maxCol: Int get() = cells.keys.maxOrNull() ?: -1
+    fun cell(col: Int): String = if (col < 0) "" else cells[col].orEmpty()
+}
+
+class SheetData(val name: String, val rows: List<SheetRow>)
+
 /** Một dòng dữ liệu để hiển thị. Chỉ nằm trong RAM, không bao giờ ghi xuống đĩa. */
 data class Item(
     val rowNumber: Int,
@@ -26,15 +34,22 @@ fun buildItems(
     qtyCol: Int,
     imeiCol: Int
 ): List<Item> {
-    fun cell(row: List<String>, c: Int): String =
-        if (c < 0) "" else row.getOrElse(c) { "" }.trim()
-
+    if (qrCol < 0) return emptyList()
     val out = ArrayList<Item>()
-    for (i in (if (hasHeader) 1 else 0) until sheet.rows.size) {
-        val r = sheet.rows[i]
-        val code = cell(r, qrCol)
+    for (row in sheet.rows) {
+        // Ngữ nghĩa "dòng đầu là tiêu đề": luôn là dòng 1 của sheet.
+        if (hasHeader && row.rowNumber == 1) continue
+        val code = row.cell(qrCol).trim()
         if (code.isEmpty()) continue
-        out.add(Item(i + 1, code, cell(r, nameCol), cell(r, qtyCol), cell(r, imeiCol)))
+        out.add(
+            Item(
+                rowNumber = row.rowNumber,
+                code = code,
+                name = row.cell(nameCol).trim(),
+                qty = row.cell(qtyCol).trim(),
+                imei = row.cell(imeiCol).trim()
+            )
+        )
     }
     return out
 }

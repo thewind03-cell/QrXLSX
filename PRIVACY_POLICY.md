@@ -1,4 +1,4 @@
-# Chính sách quyền riêng tư – QRcode Kiểm Kê
+# Chính sách quyền riêng tư – QR Kiểm Kê
 
 Cập nhật lần cuối: 20/11/2026
 
@@ -6,7 +6,7 @@ Cập nhật lần cuối: 20/11/2026
 **Liên hệ:** thewind03@gmail.com
 
 ## Dữ liệu chúng tôi thu thập
-QRcode Kiểm Kê **không thu thập, không gửi ra ngoài và không chia sẻ** bất kỳ dữ liệu cá nhân hay dữ liệu nghiệp vụ nào của bạn.
+QR Kiểm Kê **không thu thập, không gửi ra ngoài và không chia sẻ** bất kỳ dữ liệu cá nhân hay dữ liệu nghiệp vụ nào của bạn.
 
 ## Cách ứng dụng xử lý và lưu trạng thái phiên trên thiết bị
 - Khi bạn chọn một file Excel (.xlsx), ứng dụng đọc file đó **ngay trên thiết bị** để tạo mã QR. Ứng dụng chỉ truy cập file bạn chọn thông qua bộ chọn file của Android (`OpenDocument`), không xin quyền truy cập toàn bộ bộ nhớ.
